@@ -35,9 +35,9 @@ Click this link to install directly (requires a userscript manager):
 #### Option 2: Manual Installation
 1. Click the Tampermonkey icon in your browser and select "Create a new script"
 2. Delete any default code
-3. Copy the entire content of the [`microsoftRewards.user.js`](microsoftRewards.user.js) file
-4. Paste it into the Tampermonkey editor
-5. Click File > Save or press Ctrl+S
+3. Copy the entire content of the [`microsoftRewards.user.js`](MicrosoftRewards.user.js) file
+5. Paste it into the Tampermonkey editor
+6. Click File > Save or press Ctrl+S
 
 ## Usage
 
