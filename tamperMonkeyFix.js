@@ -61,6 +61,12 @@
     
     function setValue(key, value) {
         try {
+            // Track if user has manually moved the button
+            if (key === 'buttonPosition' && value && 
+                typeof value === 'object' && 'x' in value && 'y' in value) {
+                setValue('userMovedButton', true); 
+            }
+            
             if (typeof GM_setValue === 'function') {
                 GM_setValue(key, value);
             } else {
@@ -208,6 +214,15 @@
     
     // Store button position
     let buttonPosition = getValue('buttonPosition', { x: 20, y: 20 });
+
+    // Add constants for mobile detection and configuration
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|mobile|CriOS/i.test(navigator.userAgent);
+    const mobileSafeArea = {
+        top: 60,  // Avoid top navigation/address bar
+        right: 10,
+        bottom: 80, // Avoid bottom navigation bar
+        left: 10
+    };
 
     // Helper function to get random item from array
     function getRandomItem(array) {
@@ -707,134 +722,106 @@
         
         try {
             logDebug('Adding styles');
-            // Use GM_addStyle if available (safer and preferred method)
+            
+            // Get appropriate button position
+            buttonPosition = getDeviceSafePosition();
+            
+            // Common styles for both mobile and desktop
+            const commonStyles = `
+                #bing-auto-search-button {
+                    position: fixed;
+                    left: ${buttonPosition.x}px;
+                    top: ${buttonPosition.y}px;
+                    width: ${isMobile ? '90' : '80'}px;
+                    height: ${isMobile ? '90' : '80'}px;
+                    border-radius: 12px;
+                    color: white;
+                    font-size: ${isMobile ? '16' : '14'}px;
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    align-items: center;
+                    text-align: center;
+                    cursor: pointer;
+                    box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+                    z-index: 2147483647 !important; /* Maximum z-index */
+                    user-select: none;
+                    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.3s ease;
+                    border: ${isDebugMode() ? '3px solid yellow' : '3px solid rgba(255,255,255,0.5)'};
+                    will-change: transform, left, top;
+                    background: linear-gradient(135deg, #0078d7, #0063b1);
+                    touch-action: none;
+                    opacity: 0.95;
+                }
+                #bing-auto-search-button:active {
+                    transform: scale(0.95);
+                }
+                @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.05); }
+                    100% { transform: scale(1); }
+                }
+                .searching {
+                    animation: pulse 2s infinite;
+                    background: linear-gradient(135deg, #ff5555, #ff3333) !important;
+                }
+                #bing-auto-search-button[data-dragging="true"].searching {
+                    animation: none;
+                }
+                #rewards-automator-debug {
+                    position: fixed;
+                    bottom: 10px;
+                    right: 10px;
+                    background: rgba(0,0,0,0.7);
+                    color: lime;
+                    padding: 5px 10px;
+                    border-radius: 5px;
+                    font-family: monospace;
+                    z-index: 2147483646;
+                    font-size: 12px;
+                }
+                /* Mobile-specific error indicator */
+                #rewards-automator-error {
+                    position: fixed;
+                    top: 60px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background: rgba(255,0,0,0.8);
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 5px;
+                    font-family: Arial, sans-serif;
+                    z-index: 2147483646;
+                    font-size: 14px;
+                    max-width: 80%;
+                    text-align: center;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+                }
+            `;
+            
+            // Use GM_addStyle if available
             if (typeof GM_addStyle === 'function') {
-                GM_addStyle(`
-                    #bing-auto-search-button {
-                        position: fixed;
-                        left: ${buttonPosition.x}px;
-                        top: ${buttonPosition.y}px;
-                        width: 80px;
-                        height: 80px;
-                        border-radius: 12px;
-                        color: white;
-                        font-size: 14px;
-                        font-family: Arial, sans-serif;
-                        display: flex;
-                        flex-direction: column;
-                        justify-content: center;
-                        align-items: center;
-                        text-align: center;
-                        cursor: pointer;
-                        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-                        z-index: 99999;
-                        user-select: none;
-                        transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.3s ease;
-                        border: ${isDebugMode() ? '2px solid yellow' : '2px solid rgba(255,255,255,0.3)'};
-                        will-change: transform, left, top;
-                        background: linear-gradient(135deg, #0078d7, #0063b1);
-                        touch-action: none;
-                    }
-                    #bing-auto-search-button:active {
-                        transform: scale(0.95);
-                    }
-                    @keyframes pulse {
-                        0% { transform: scale(1); }
-                        50% { transform: scale(1.05); }
-                        100% { transform: scale(1); }
-                    }
-                    .searching {
-                        animation: pulse 2s infinite;
-                        background: linear-gradient(135deg, #ff5555, #ff3333) !important;
-                    }
-                    #bing-auto-search-button[data-dragging="true"].searching {
-                        animation: none;
-                    }
-                    #rewards-automator-debug {
-                        position: fixed;
-                        bottom: 10px;
-                        right: 10px;
-                        background: rgba(0,0,0,0.7);
-                        color: lime;
-                        padding: 5px 10px;
-                        border-radius: 5px;
-                        font-family: monospace;
-                        z-index: 99999;
-                        font-size: 12px;
-                    }
-                `);
+                GM_addStyle(commonStyles);
                 logDebug('Styles added with GM_addStyle');
             } else {
                 // Fallback method: Create a text node
                 const style = document.createElement('style');
                 style.type = 'text/css';
-                const css = `
-                    #bing-auto-search-button {
-                        position: fixed;
-                        left: ${buttonPosition.x}px;
-                        top: ${buttonPosition.y}px;
-                        width: 80px;
-                        height: 80px;
-                        border-radius: 12px;
-                        color: white;
-                        font-size: 14px;
-                        font-family: Arial, sans-serif;
-                        display: flex;
-                        flex-direction: column;
-                        justify-content: center;
-                        align-items: center;
-                        text-align: center;
-                        cursor: pointer;
-                        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-                        z-index: 99999;
-                        user-select: none;
-                        transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.3s ease;
-                        border: ${isDebugMode() ? '2px solid yellow' : '2px solid rgba(255,255,255,0.3)'};
-                        will-change: transform, left, top;
-                        background: linear-gradient(135deg, #0078d7, #0063b1);
-                        touch-action: none;
-                    }
-                    #bing-auto-search-button:active {
-                        transform: scale(0.95);
-                    }
-                    @keyframes pulse {
-                        0% { transform: scale(1); }
-                        50% { transform: scale(1.05); }
-                        100% { transform: scale(1); }
-                    }
-                    .searching {
-                        animation: pulse 2s infinite;
-                        background: linear-gradient(135deg, #ff5555, #ff3333) !important;
-                    }
-                    #bing-auto-search-button[data-dragging="true"].searching {
-                        animation: none;
-                    }
-                    #rewards-automator-debug {
-                        position: fixed;
-                        bottom: 10px;
-                        right: 10px;
-                        background: rgba(0,0,0,0.7);
-                        color: lime;
-                        padding: 5px 10px;
-                        border-radius: 5px;
-                        font-family: monospace;
-                        z-index: 99999;
-                        font-size: 12px;
-                    }
-                `;
-                style.appendChild(document.createTextNode(css));
+                style.appendChild(document.createTextNode(commonStyles));
                 
-                // Try to add to head or body, whichever is available
+                // Add to head or body
                 if (document.head) {
                     document.head.appendChild(style);
                 } else if (document.body) {
                     document.body.appendChild(style);
                 } else {
-                    // If neither is available, wait for DOMContentLoaded
+                    // Last resort - wait for DOMContentLoaded
                     document.addEventListener('DOMContentLoaded', function() {
-                        document.head.appendChild(style);
+                        if (document.head) document.head.appendChild(style);
+                        else if (document.body) document.body.appendChild(style);
                     });
-                    return false; // Indicate we need to try again later
+                    return false;
                 }
                 logDebug('Styles added with fallback method');
             }
@@ -842,8 +829,44 @@
             stylesAdded = true;
             return true;
         } catch (e) {
-            logError(`Error adding styles: ${e.message}`);
+            showVisibleError(`Error adding styles: ${e.message}`);
             return false;
+        }
+    }
+
+    // Function to create a visible error (not just console)
+    function showVisibleError(message) {
+        logError(message);
+        
+        try {
+            // Only create if it doesn't exist
+            if (!document.getElementById('rewards-automator-error')) {
+                if (!document.body) return; // Can't add without body
+                
+                const errorBox = document.createElement('div');
+                errorBox.id = 'rewards-automator-error';
+                errorBox.textContent = message;
+                
+                // Add close button
+                const closeBtn = document.createElement('div');
+                closeBtn.style.cssText = 'position:absolute;top:2px;right:5px;cursor:pointer;';
+                closeBtn.textContent = '×';
+                closeBtn.addEventListener('click', function() {
+                    errorBox.remove();
+                });
+                errorBox.appendChild(closeBtn);
+                
+                // Auto-hide after 10 seconds
+                document.body.appendChild(errorBox);
+                setTimeout(() => {
+                    if (errorBox.parentNode) errorBox.remove();
+                }, 10000);
+            }
+        } catch (e) {
+            // If we can't show visual error, last resort is alert
+            if (isDebugMode()) {
+                alert("Error: " + message);
+            }
         }
     }
 
@@ -872,7 +895,7 @@
             // Create icon
             const iconSpan = document.createElement('span');
             iconSpan.style.cssText = `
-                font-size: 20px;
+                font-size: ${isMobile ? '24px' : '20px'};
                 margin-bottom: 4px;
                 pointer-events: none;
             `;
@@ -890,7 +913,7 @@
             const counterSpan = document.createElement('span');
             counterSpan.id = 'bing-search-counter';
             counterSpan.style.cssText = `
-                font-size: 12px;
+                font-size: ${isMobile ? '14px' : '12px'};
                 margin-top: 2px;
                 opacity: 0.9;
                 pointer-events: none;
@@ -901,19 +924,31 @@
             floatingButton.appendChild(textSpan);
             floatingButton.appendChild(counterSpan);
             
-            // Add hover effect
-            floatingButton.addEventListener('mouseenter', function() {
-                // Only apply hover effect if not dragging
-                if (!document.querySelector('#bing-auto-search-button[data-dragging="true"]')) {
-                    this.style.transform = 'scale(1.05)';
-                    this.style.boxShadow = '0 6px 15px rgba(0,0,0,0.4)';
-                }
-            });
+            // Add hover/touch effect
+            if (!isMobile) {
+                floatingButton.addEventListener('mouseenter', function() {
+                    if (!document.querySelector('#bing-auto-search-button[data-dragging="true"]')) {
+                        this.style.transform = 'scale(1.05)';
+                        this.style.boxShadow = '0 6px 15px rgba(0,0,0,0.4)';
+                    }
+                });
+                
+                floatingButton.addEventListener('mouseleave', function() {
+                    this.style.transform = 'scale(1)';
+                    this.style.boxShadow = '0 4px 10px rgba(0,0,0,0.3)';
+                });
+            }
             
-            floatingButton.addEventListener('mouseleave', function() {
-                this.style.transform = 'scale(1)';
-                this.style.boxShadow = '0 4px 10px rgba(0,0,0,0.3)';
-            });
+            // Mobile-specific tap feedback
+            if (isMobile) {
+                floatingButton.addEventListener('touchstart', function() {
+                    this.style.transform = 'scale(0.95)';
+                }, { passive: false });
+                
+                floatingButton.addEventListener('touchend', function() {
+                    this.style.transform = 'scale(1)';
+                }, { passive: false });
+            }
             
             document.body.appendChild(floatingButton);
             
@@ -930,9 +965,15 @@
             
             buttonAdded = true;
             logInfo('Floating button added successfully');
+            
+            // Special mobile fix: check if button is visible by adding a delayed visibility check
+            if (isMobile) {
+                setTimeout(verifyButtonVisibility, 2000);
+            }
+            
             return true;
         } catch (err) {
-            logError(`Error in addFloatingButton: ${err.message}`);
+            showVisibleError(`Error adding button: ${err.message}`);
             return false;
         }
     }
@@ -972,6 +1013,66 @@
         } catch (err) {
             logError(`Error in updateFloatingButton: ${err.message}`);
         }
+    }
+
+    // Function to verify button visibility and fix if needed
+    function verifyButtonVisibility() {
+        try {
+            const button = document.getElementById('bing-auto-search-button');
+            if (!button) {
+                logDebug('Button not found in visibility check, trying to recreate');
+                buttonAdded = false;
+                addFloatingButton();
+                return;
+            }
+            
+            // Check if button is outside viewport
+            const rect = button.getBoundingClientRect();
+            const isOffscreen = (
+                rect.right <= 0 || 
+                rect.bottom <= 0 || 
+                rect.left >= window.innerWidth || 
+                rect.top >= window.innerHeight
+            );
+            
+            if (isOffscreen) {
+                logDebug('Button is offscreen, repositioning');
+                // Reset to a safer position
+                setValue('userMovedButton', false);
+                const safePos = getDeviceSafePosition();
+                button.style.left = safePos.x + 'px';
+                button.style.top = safePos.y + 'px';
+                buttonPosition = safePos;
+                setValue('buttonPosition', safePos);
+            }
+            
+            // Make sure the button is visible (not hidden by CSS)
+            button.style.display = 'flex';
+            button.style.visibility = 'visible';
+            button.style.opacity = '0.95';
+            
+            // Force the button to front in case it's behind other elements
+            document.body.appendChild(button); // Re-append to bring to front
+            
+        } catch (e) {
+            logError(`Error in button visibility check: ${e.message}`);
+        }
+    }
+
+    // Function to get device-appropriate position
+    function getDeviceSafePosition() {
+        const defaultPos = getValue('buttonPosition', { x: 20, y: 20 });
+        
+        // If not mobile or user has moved the button, use stored position
+        if (!isMobile || getValue('userMovedButton', false)) {
+            return defaultPos;
+        }
+        
+        // For mobile, place in a safer default position (bottom right)
+        return {
+            x: window.innerWidth - 90 - mobileSafeArea.right,
+            y: window.innerHeight - 90 - mobileSafeArea.bottom
+        };
     }
 
     // Multiple initialization methods for better compatibility
@@ -1034,6 +1135,19 @@
             if (isDebugMode()) {
                 showNotification('Rewards Automator Ready', 
                     `Script initialized successfully. ${isRunning ? 'Searches are active.' : 'Click START to begin searches.'}`);
+            }
+
+            // Mobile optimization - add a backup check every 5 seconds
+            if (isMobile) {
+                setInterval(function() {
+                    // Check if button still exists and is visible
+                    const button = document.getElementById('bing-auto-search-button');
+                    if (!button || button.offsetParent === null) {
+                        logDebug('Button missing or hidden, attempting to fix');
+                        buttonAdded = false;
+                        addFloatingButton();
+                    }
+                }, 5000);
             }
         } catch (err) {
             logError(`Failed to initialize script: ${err.message}`);
@@ -1131,4 +1245,37 @@
             }
         }
     }, 5000);
+
+    // Additional setup - Add a "Force init" option to mobile menu
+    if (isMobile) {
+        function forceInitialization() {
+            scriptInitialized = false;
+            buttonAdded = false;
+            stylesAdded = false;
+            initAttempts = 0;
+            showNotification('Reinitializing', 'Forcing reinitialization of the script...');
+            setTimeout(initializeScript, 100);
+        }
+        
+        try {
+            if (typeof GM_registerMenuCommand === 'function') {
+                GM_registerMenuCommand('Force Reinitialize', forceInitialization);
+            }
+        } catch (e) {
+            logError(`Error registering force init command: ${e.message}`);
+        }
+    }
+
+    // More aggressive initialization for mobile
+    if (isMobile) {
+        // Try multiple times over a longer period
+        for (let delay of [100, 500, 1000, 2000, 3000, 5000, 10000]) {
+            setTimeout(function() {
+                if (!scriptInitialized) {
+                    logDebug(`Mobile retry initialization after ${delay}ms`);
+                    initializeScript();
+                }
+            }, delay);
+        }
+    }
 })();
