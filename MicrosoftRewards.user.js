@@ -137,6 +137,94 @@
     // Search history tracking - load from storage or initialize empty
     let searchHistory = GM_getValue('searchHistory', []);
     
+    // Tab coordination - to handle multiple tabs
+    let activeTabId = GM_getValue('activeTabId', null);
+    let thisTabId = Date.now().toString() + Math.floor(Math.random() * 10000).toString();
+    let buttonVisibleTabId = GM_getValue('buttonVisibleTabId', null);
+    
+    // Function to check if this tab should be active
+    function isActiveTab() {
+        return activeTabId === thisTabId || activeTabId === null;
+    }
+    
+    // Function to check if this tab should show the button
+    function shouldShowButtonInThisTab() {
+        // If no tab is currently showing the button, this tab can show it
+        if (buttonVisibleTabId === null) {
+            return true;
+        }
+        
+        // If this tab is already designated to show the button, continue showing it
+        if (buttonVisibleTabId === thisTabId) {
+            return true;
+        }
+        
+        // If another tab is showing the button, don't show it here
+        return false;
+    }
+    
+    // Function to claim the right to show the button in this tab
+    function claimButtonVisibility() {
+        buttonVisibleTabId = thisTabId;
+        GM_setValue('buttonVisibleTabId', thisTabId);
+        logInfo('This tab claimed button visibility');
+    }
+    
+    // Function to claim active status for this tab
+    function claimActiveStatus() {
+        activeTabId = thisTabId;
+        GM_setValue('activeTabId', thisTabId);
+    }
+    
+    // Function to release active status
+    function releaseActiveStatus() {
+        if (isActiveTab()) {
+            GM_setValue('activeTabId', null);
+        }
+    }
+    
+    // Function to release button visibility
+    function releaseButtonVisibility() {
+        if (buttonVisibleTabId === thisTabId) {
+            GM_setValue('buttonVisibleTabId', null);
+        }
+    }
+    
+    // Check tab status periodically to handle closed tabs
+    function checkTabStatus() {
+        try {
+            // If automation is not running anywhere, reset the active tab
+            if (!isRunning && activeTabId !== null) {
+                releaseActiveStatus();
+            }
+            
+            // If automation is running but no tab is active, claim it
+            if (isRunning && activeTabId === null) {
+                claimActiveStatus();
+            }
+            
+            // If no tab is showing the button, claim visibility
+            if (buttonVisibleTabId === null) {
+                claimButtonVisibility();
+            }
+        } catch (err) {
+            logError(`Error in checkTabStatus: ${err.message}`);
+        }
+    }
+    
+    // Handle tab close/unload
+    window.addEventListener('beforeunload', function() {
+        // If this tab is showing the button, release it so other tabs can show it
+        if (buttonVisibleTabId === thisTabId) {
+            releaseButtonVisibility();
+        }
+        
+        // If this tab is running the automation, stop it
+        if (isActiveTab() && isRunning) {
+            releaseActiveStatus();
+        }
+    });
+
     // Function to check if a search query has been used recently
     function isQueryInHistory(query) {
         return searchHistory.includes(query.toLowerCase());
@@ -356,6 +444,9 @@
                 searchTimer = setTimeout(performSearch, initialInterval);
                 lastRunTime = Date.now() + initialInterval;
                 GM_setValue('lastRunTime', lastRunTime);
+                
+                // Claim active status for this tab
+                claimActiveStatus();
             }
         } catch (err) {
             logError(`Error in startAutomation: ${err.message}`);
@@ -373,6 +464,9 @@
                 }
                 updateFloatingButton();
                 logInfo('Stopped automated Bing searches');
+                
+                // Release active status for this tab
+                releaseActiveStatus();
             }
         } catch (err) {
             logError(`Error in stopAutomation: ${err.message}`);
@@ -643,6 +737,18 @@
     // Create a floating activation button
     function addFloatingButton() {
         try {
+            // Check if button already exists to prevent duplicates
+            if (document.getElementById('bing-auto-search-button')) {
+                logInfo('Button already exists, not creating a duplicate');
+                return document.getElementById('bing-auto-search-button');
+            }
+            
+            // Check if this tab should show the button
+            if (!shouldShowButtonInThisTab()) {
+                logInfo('This tab is not designated to show the button');
+                return null;
+            }
+            
             const floatingButton = document.createElement('div');
             floatingButton.id = 'bing-auto-search-button';
             
@@ -728,6 +834,9 @@
             
             // Handle button click separately from dragging
             handleButtonClick(floatingButton);
+            
+            // Claim button visibility for this tab
+            claimButtonVisibility();
             
             logInfo('Floating button added successfully');
             return floatingButton;
@@ -880,13 +989,24 @@
     window.addEventListener('load', function() {
         logInfo('Bing Search Automator initialized');
         addStyles();
-        addFloatingButton();
-        registerMenuCommands();
         
-        // Check if we need to resume operation
-        if (isRunning) {
-            checkAndResumeOperation();
-        }
+        // Use a short delay before adding the button to ensure DOM is stable
+        setTimeout(() => {
+            addFloatingButton();
+            
+            // Check and handle dynamic content loading (like when clicking trophy icon)
+            observeBodyChanges();
+            
+            // Check if we need to resume operation
+            if (isRunning) {
+                checkAndResumeOperation();
+            }
+            
+            // Check and update tab status
+            checkTabStatus();
+        }, 500);
+        
+        registerMenuCommands();
         
         // Add message about console errors not being related to our script
         logInfo('NOTE: Console errors from Bing\'s own scripts are normal and not related to this automation tool');
@@ -895,15 +1015,29 @@
         logInfo(`Search history contains ${searchHistory.length} entries`);
     });
     
-    // Handle visibility change (when tab becomes active/inactive)
-    document.addEventListener('visibilitychange', function() {
-        if (document.visibilityState === 'visible') {
-            logInfo('Tab is now active');
-            updateFloatingButton();
-            checkAndResumeOperation();
-        } else {
-            logInfo('Tab is now inactive');
-            // Just let it continue in background
+    // Function to observe DOM changes and manage button state
+    function observeBodyChanges() {
+        try {
+            const observer = new MutationObserver(mutations => {
+                // Check if our button still exists
+                const buttonExists = !!document.getElementById('bing-auto-search-button');
+                
+                // If button doesn't exist, recreate it
+                if (!buttonExists && shouldShowButtonInThisTab()) {
+                    logInfo('Button disappeared, recreating...');
+                    addFloatingButton();
+                }
+            });
+            
+            // Start observing the document body for DOM changes
+            observer.observe(document.body, { 
+                childList: true,
+                subtree: true
+            });
+            
+            logInfo('DOM observer started');
+        } catch (err) {
+            logError(`Error in observeBodyChanges: ${err.message}`);
         }
-    });
+    }
 })();
