@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Search Automator for Microsoft Rewards
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.8
 // @description  Automate searches on Bing to earn Microsoft Rewards points
 // @author       You
 // @match        https://*.bing.com/*
@@ -23,12 +23,14 @@
     const logWarning = (message) => console.warn(`%c${scriptPrefix}WARNING: ${message}`, 'color: #ff9900; font-weight: bold;');
 
     // Log script initialization
-    logInfo(`Initializing v1.7 - ${new Date().toLocaleString()}`);
+    logInfo(`Initializing v1.8 - ${new Date().toLocaleString()}`);
     
     // Configuration
     const config = {
         minInterval: 15, // Minimum time between searches in seconds
         maxInterval: 40, // Maximum time between searches in seconds
+        // Maximum search history to store (24 hours worth of searches)
+        maxSearchHistorySize: 100,
         // Keywords components for generating natural search queries
         keywordComponents: {
             // Question prefixes
@@ -131,6 +133,40 @@
     
     // Store button position
     let buttonPosition = GM_getValue('buttonPosition', { x: 20, y: 20 });
+    
+    // Search history tracking - load from storage or initialize empty
+    let searchHistory = GM_getValue('searchHistory', []);
+    
+    // Function to check if a search query has been used recently
+    function isQueryInHistory(query) {
+        return searchHistory.includes(query.toLowerCase());
+    }
+    
+    // Function to add a query to search history
+    function addQueryToHistory(query) {
+        // Convert to lowercase for case-insensitive comparison
+        query = query.toLowerCase();
+        
+        // Add to history if not already present
+        if (!isQueryInHistory(query)) {
+            searchHistory.push(query);
+            
+            // Trim history to max size
+            if (searchHistory.length > config.maxSearchHistorySize) {
+                searchHistory = searchHistory.slice(-config.maxSearchHistorySize);
+            }
+            
+            // Save to persistent storage
+            GM_setValue('searchHistory', searchHistory);
+        }
+    }
+    
+    // Function to clear search history
+    function clearSearchHistory() {
+        searchHistory = [];
+        GM_setValue('searchHistory', searchHistory);
+        logInfo('Search history cleared');
+    }
 
     // Helper function to get random item from array
     function getRandomItem(array) {
@@ -202,9 +238,29 @@
         }
     }
 
-    // Function to get a random keyword or generate one
+    // Function to get a unique random keyword that hasn't been used recently
     function getRandomKeyword() {
-        return generateSearchQuery();
+        // Set a limit to prevent infinite loops
+        const MAX_ATTEMPTS = 10;
+        let attempts = 0;
+        let keyword;
+        
+        do {
+            keyword = generateSearchQuery();
+            attempts++;
+            
+            // If we've tried too many times, just use this keyword and make it slightly unique
+            if (attempts >= MAX_ATTEMPTS && isQueryInHistory(keyword)) {
+                const uniqueSuffix = Math.floor(Math.random() * 100);
+                keyword = `${keyword} ${uniqueSuffix}`;
+                break;
+            }
+        } while (isQueryInHistory(keyword) && attempts < MAX_ATTEMPTS);
+        
+        // Add to history for tracking
+        addQueryToHistory(keyword);
+        
+        return keyword;
     }
 
     // Function to get a random interval between minInterval and maxInterval
@@ -232,7 +288,7 @@
                                 document.querySelector('input[type="search"]');
 
             if (searchInput) {
-                // Get a random keyword
+                // Get a random keyword that hasn't been used recently
                 const keyword = getRandomKeyword();
                 
                 // Set the value and trigger events
@@ -618,14 +674,15 @@
                 will-change: transform, left, top;
             `;
             
-            // Create icon
+            // Create icon - Fix for TrustedHTML error
             const iconSpan = document.createElement('span');
             iconSpan.style.cssText = `
                 font-size: 20px;
                 margin-bottom: 4px;
                 pointer-events: none;
             `;
-            iconSpan.innerHTML = isRunning ? '⏹️' : '▶️';
+            // Use textContent instead of innerHTML
+            iconSpan.textContent = isRunning ? '⏹️' : '▶️';
             
             // Create text
             const textSpan = document.createElement('span');
@@ -690,10 +747,11 @@
                     'linear-gradient(135deg, #ff5555, #ff3333)' : 
                     'linear-gradient(135deg, #0078d7, #0063b1)';
                 
-                // Update icon and text
+                // Update icon and text - Fix for TrustedHTML error
                 const iconSpan = button.querySelector('span:first-child');
                 if (iconSpan) {
-                    iconSpan.innerHTML = isRunning ? '⏹️' : '▶️';
+                    // Use textContent instead of innerHTML
+                    iconSpan.textContent = isRunning ? '⏹️' : '▶️';
                 }
                 
                 const textSpan = button.querySelector('span:nth-child(2)');
@@ -722,6 +780,7 @@
     function registerMenuCommands() {
         GM_registerMenuCommand('Start Auto-Search', startAutomation);
         GM_registerMenuCommand('Stop Auto-Search', stopAutomation);
+        GM_registerMenuCommand('Clear Search History', clearSearchHistory);
     }
 
     // Check if we need to resume operation (when tab becomes active again)
@@ -831,6 +890,9 @@
         
         // Add message about console errors not being related to our script
         logInfo('NOTE: Console errors from Bing\'s own scripts are normal and not related to this automation tool');
+        
+        // Log search history stats
+        logInfo(`Search history contains ${searchHistory.length} entries`);
     });
     
     // Handle visibility change (when tab becomes active/inactive)
