@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Bing Search Automator for Microsoft Rewards
 // @namespace    http://tampermonkey.net/
-// @version      1.8
+// @version      1.9
 // @description  Automate searches on Bing to earn Microsoft Rewards points
 // @author       You
 // @match        https://*.bing.com/*
+// @match        https://rewards.bing.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
@@ -141,6 +142,9 @@
     let activeTabId = GM_getValue('activeTabId', null);
     let thisTabId = Date.now().toString() + Math.floor(Math.random() * 10000).toString();
     let buttonVisibleTabId = GM_getValue('buttonVisibleTabId', null);
+    let lastButtonVisibilityUpdateTime = GM_getValue('lastButtonVisibilityUpdateTime', 0);
+    const TAB_TIMEOUT_MS = 30000; // Reduced to 30 seconds to detect stale tabs faster
+    const HEARTBEAT_INTERVAL = 10000; // Heartbeat every 10 seconds
     
     // Function to check if this tab should be active
     function isActiveTab() {
@@ -149,6 +153,15 @@
     
     // Function to check if this tab should show the button
     function shouldShowButtonInThisTab() {
+        // Reset button visibility if it's been too long since the last update
+        const currentTime = Date.now();
+        if (buttonVisibleTabId !== null && 
+            (currentTime - lastButtonVisibilityUpdateTime) > TAB_TIMEOUT_MS) {
+            logInfo('Button visibility timeout exceeded, resetting...');
+            GM_setValue('buttonVisibleTabId', null);
+            buttonVisibleTabId = null;
+        }
+        
         // If no tab is currently showing the button, this tab can show it
         if (buttonVisibleTabId === null) {
             return true;
@@ -167,7 +180,17 @@
     function claimButtonVisibility() {
         buttonVisibleTabId = thisTabId;
         GM_setValue('buttonVisibleTabId', thisTabId);
+        lastButtonVisibilityUpdateTime = Date.now();
+        GM_setValue('lastButtonVisibilityUpdateTime', lastButtonVisibilityUpdateTime);
         logInfo('This tab claimed button visibility');
+    }
+    
+    // Function to update last button visibility time
+    function updateButtonVisibilityTime() {
+        if (buttonVisibleTabId === thisTabId) {
+            lastButtonVisibilityUpdateTime = Date.now();
+            GM_setValue('lastButtonVisibilityUpdateTime', lastButtonVisibilityUpdateTime);
+        }
     }
     
     // Function to claim active status for this tab
@@ -190,9 +213,42 @@
         }
     }
     
+    // Function to reset tab coordination if needed
+    function resetTabCoordination() {
+        GM_setValue('buttonVisibleTabId', null);
+        GM_setValue('activeTabId', null);
+        buttonVisibleTabId = null;
+        activeTabId = null;
+        logInfo('Tab coordination reset');
+    }
+    
+    // Register keyboard shortcut for resetting coordination
+    document.addEventListener('keydown', function(e) {
+        // Alt+Shift+R to reset tab coordination
+        if (e.altKey && e.shiftKey && e.key === 'R') {
+            resetTabCoordination();
+            setTimeout(() => {
+                claimButtonVisibility();
+                addFloatingButton(); // Re-add the button after reset
+            }, 100);
+            logInfo('Tab coordination reset triggered by keyboard shortcut');
+        }
+    });
+    
     // Check tab status periodically to handle closed tabs
     function checkTabStatus() {
         try {
+            const currentTime = Date.now();
+            
+            // Check if button visibility claim is stale
+            if (buttonVisibleTabId !== null && 
+                buttonVisibleTabId !== thisTabId && 
+                (currentTime - lastButtonVisibilityUpdateTime) > TAB_TIMEOUT_MS) {
+                logInfo('Detected stale button visibility claim, resetting...');
+                GM_setValue('buttonVisibleTabId', null);
+                buttonVisibleTabId = null;
+            }
+            
             // If automation is not running anywhere, reset the active tab
             if (!isRunning && activeTabId !== null) {
                 releaseActiveStatus();
@@ -206,11 +262,49 @@
             // If no tab is showing the button, claim visibility
             if (buttonVisibleTabId === null) {
                 claimButtonVisibility();
+                // Force redraw of button
+                const existingButton = document.getElementById('bing-auto-search-button');
+                if (!existingButton) {
+                    addFloatingButton();
+                }
+            } else if (buttonVisibleTabId === thisTabId) {
+                // If this tab has the button, update the timestamp
+                updateButtonVisibilityTime();
             }
+            
+            // Schedule next check
+            setTimeout(checkTabStatus, 5000); // Check every 5 seconds
         } catch (err) {
             logError(`Error in checkTabStatus: ${err.message}`);
         }
     }
+    
+    // Document visibility change handler - update button visibility timestamp when tab is active
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') {
+            if (buttonVisibleTabId === thisTabId) {
+                updateButtonVisibilityTime();
+            } else if (buttonVisibleTabId === null) {
+                claimButtonVisibility();
+                const existingButton = document.getElementById('bing-auto-search-button');
+                if (!existingButton) {
+                    addFloatingButton();
+                }
+            } else {
+                // Check if the button visibility claim is stale
+                const currentTime = Date.now();
+                if ((currentTime - lastButtonVisibilityUpdateTime) > TAB_TIMEOUT_MS) {
+                    logInfo('Detected stale button visibility on tab activation, claiming...');
+                    GM_setValue('buttonVisibleTabId', null);
+                    buttonVisibleTabId = null;
+                    setTimeout(() => {
+                        claimButtonVisibility();
+                        addFloatingButton();
+                    }, 100);
+                }
+            }
+        }
+    });
     
     // Handle tab close/unload
     window.addEventListener('beforeunload', function() {
@@ -985,6 +1079,35 @@
         }
     });
 
+    // Set up heartbeat to keep tab status updated
+    function startHeartbeat() {
+        // Immediate first heartbeat
+        sendHeartbeat();
+        
+        // Schedule regular heartbeats
+        setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
+    }
+    
+    // Send heartbeat to indicate this tab is active
+    function sendHeartbeat() {
+        if (document.visibilityState === 'visible') {
+            // Update last activity time if this tab has the button
+            if (buttonVisibleTabId === thisTabId) {
+                updateButtonVisibilityTime();
+                logInfo('Heartbeat sent - this tab has the button');
+            }
+            
+            // If no tab claims to have the button but we're visible, try to claim it
+            if (buttonVisibleTabId === null) {
+                claimButtonVisibility();
+                const existingButton = document.getElementById('bing-auto-search-button');
+                if (!existingButton) {
+                    addFloatingButton();
+                }
+            }
+        }
+    }
+
     // Initialize when the page is fully loaded
     window.addEventListener('load', function() {
         logInfo('Bing Search Automator initialized');
@@ -992,7 +1115,17 @@
         
         // Use a short delay before adding the button to ensure DOM is stable
         setTimeout(() => {
-            addFloatingButton();
+            // Try to add the button
+            const button = addFloatingButton();
+            
+            // If button wasn't added and no tab is showing it, force reset
+            if (!button && !buttonVisibleTabId) {
+                resetTabCoordination();
+                // Try again after reset
+                setTimeout(() => {
+                    addFloatingButton();
+                }, 200);
+            }
             
             // Check and handle dynamic content loading (like when clicking trophy icon)
             observeBodyChanges();
@@ -1002,11 +1135,17 @@
                 checkAndResumeOperation();
             }
             
+            // Start heartbeat to keep tab status updated
+            startHeartbeat();
+            
             // Check and update tab status
             checkTabStatus();
         }, 500);
         
         registerMenuCommands();
+        
+        // Add manual reset command
+        GM_registerMenuCommand('Reset Tab Coordination', resetTabCoordination);
         
         // Add message about console errors not being related to our script
         logInfo('NOTE: Console errors from Bing\'s own scripts are normal and not related to this automation tool');
