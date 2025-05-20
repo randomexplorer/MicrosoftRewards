@@ -32,6 +32,21 @@
         maxInterval: 40, // Maximum time between searches in seconds
         // Maximum search history to store (24 hours worth of searches)
         maxSearchHistorySize: 100,
+        // Session-based search behavior for more human-like patterns
+        sessions: {
+            enabled: GM_getValue('sessionsEnabled', true),              // Enable session-based breaks
+            searchesPerSession: GM_getValue('searchesPerSession', 5),   // Base number of searches (used for session count estimation only)
+            minBreakTime: GM_getValue('minBreakTime', 30),             // Minimum break duration in seconds
+            maxBreakTime: GM_getValue('maxBreakTime', 300),            // Maximum break duration in seconds
+            breakPattern: [
+                { after: 5, min: 30, max: 60 },     // First break (after 5 searches): 30-60 secs
+                { after: 10, min: 60, max: 180 },    // Second break: 1-3 mins
+                { after: 15, min: 120, max: 300 },   // Third break: 2-5 mins
+                { after: 20, min: 60, max: 180 },    // Fourth break: 1-3 mins
+                { after: 25, min: 30, max: 90 }      // Fifth break: 30-90 secs
+            ],
+            showTimer: GM_getValue('showBreakTimer', true)              // Show countdown timer during breaks
+        },
         // Keywords components for generating natural search queries
         keywordComponents: {
             // Question prefixes
@@ -132,6 +147,14 @@
     let searchCount = GM_getValue('searchCount', 0);
     const MAX_SEARCHES = 30; // Maximum number of searches to perform
 
+    // Session-based search state tracking
+    let currentSession = GM_getValue('currentSession', 1);
+    let isOnBreak = GM_getValue('isOnBreak', false);
+    let breakEndTime = GM_getValue('breakEndTime', 0);
+    let breakTimer = null;
+    let sessionSearchCount = GM_getValue('sessionSearchCount', 0);
+    let totalSessionCount = Math.ceil(MAX_SEARCHES / config.sessions.searchesPerSession);
+    
     // Store button position
     let buttonPosition = GM_getValue('buttonPosition', { x: 20, y: 20 });
 
@@ -450,6 +473,124 @@
         return Math.floor(Math.random() * (config.maxInterval - config.minInterval + 1) + config.minInterval) * 1000;
     }
 
+    // Get a random break duration based on search count or break pattern
+    function getBreakDuration() {
+        // Check if we have a specific break pattern for this search count
+        if (config.sessions.breakPattern && Array.isArray(config.sessions.breakPattern)) {
+            for (const pattern of config.sessions.breakPattern) {
+                if (searchCount === pattern.after) {
+                    // Found a specific pattern for this search count
+                    return Math.floor(Math.random() * (pattern.max - pattern.min + 1) + pattern.min) * 1000;
+                }
+            }
+        }
+
+        // Default random break duration if no specific pattern matches
+        return Math.floor(Math.random() * 
+            (config.sessions.maxBreakTime - config.sessions.minBreakTime + 1) + 
+            config.sessions.minBreakTime) * 1000;
+    }
+    
+    // Function to start a session break
+    function startSessionBreak() {
+        if (!config.sessions.enabled || isOnBreak) return;
+        
+        // Calculate break duration
+        const breakDuration = getBreakDuration();
+        const breakDurationSec = Math.floor(breakDuration / 1000);
+        
+        // Set break state
+        isOnBreak = true;
+        GM_setValue('isOnBreak', true);
+        
+        // Calculate when break will end
+        breakEndTime = Date.now() + breakDuration;
+        GM_setValue('breakEndTime', breakEndTime);
+        
+        // Increment session counter
+        currentSession++;
+        GM_setValue('currentSession', currentSession);
+        
+        // Reset session search count
+        sessionSearchCount = 0;
+        GM_setValue('sessionSearchCount', sessionSearchCount);
+        
+        logInfo(`Taking a break for ${breakDurationSec} seconds (Session ${currentSession-1} complete)`);
+        
+        // Update UI to show break status
+        updateFloatingButton();
+        
+        // Start a timer to display countdown and resume after break
+        if (config.sessions.showTimer) {
+            startBreakTimer();
+        } else {
+            // Just schedule the next search without visual timer
+            breakTimer = setTimeout(() => {
+                endSessionBreak();
+                performSearch();
+            }, breakDuration);
+        }
+    }
+    
+    // Function to end a session break
+    function endSessionBreak() {
+        if (!isOnBreak) return;
+        
+        isOnBreak = false;
+        GM_setValue('isOnBreak', false);
+        
+        if (breakTimer) {
+            clearTimeout(breakTimer);
+            breakTimer = null;
+        }
+        
+        logInfo(`Break ended, starting session ${currentSession}`);
+        updateFloatingButton();
+    }
+    
+    // Start a visual break timer that updates the UI
+    function startBreakTimer() {
+        // Clear any existing timer
+        if (breakTimer) {
+            clearTimeout(breakTimer);
+        }
+        
+        // Update the timer display and check if break is complete
+        function updateBreakTimerDisplay() {
+            const now = Date.now();
+            const timeLeft = Math.max(0, breakEndTime - now);
+            
+            if (timeLeft <= 0) {
+                // Break is over
+                endSessionBreak();
+                performSearch();
+                return;
+            }
+            
+            // Update UI with remaining time
+            updateFloatingButtonTimerDisplay(timeLeft);
+            
+            // Schedule next update in 1 second
+            breakTimer = setTimeout(updateBreakTimerDisplay, 1000);
+        }
+        
+        // Start the update cycle
+        updateBreakTimerDisplay();
+    }
+    
+    // Update the button to show remaining break time
+    function updateFloatingButtonTimerDisplay(timeLeft) {
+        const button = document.getElementById('bing-auto-search-button');
+        if (!button) return;
+        
+        const counterSpan = document.getElementById('bing-search-counter');
+        if (counterSpan) {
+            const minutes = Math.floor(timeLeft / 60000);
+            const seconds = Math.floor((timeLeft % 60000) / 1000);
+            counterSpan.textContent = `Break: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+    }
+
     // Function to check if we are on Bing search page
     function isOnBingSearchPage() {
         return window.location.hostname.includes('bing.com');
@@ -458,6 +599,29 @@
     // Function to perform a search
     function performSearch() {
         try {
+            // If on break, don't perform search yet
+            if (isOnBreak) {
+                // Check if break is over by now
+                const currentTime = Date.now();
+                if (currentTime < breakEndTime) {
+                    // Break is not over yet, continue waiting
+                    const timeLeft = breakEndTime - currentTime;
+                    logInfo(`Still on break, ${Math.ceil(timeLeft/1000)} seconds remaining`);
+                    
+                    // Make sure the break timer is running
+                    if (!breakTimer && config.sessions.showTimer) {
+                        startBreakTimer();
+                    } else if (!breakTimer) {
+                        // Just schedule the next attempt without visual timer
+                        breakTimer = setTimeout(performSearch, timeLeft);
+                    }
+                    return;
+                } else {
+                    // Break is over
+                    endSessionBreak();
+                }
+            }
+            
             if (!isOnBingSearchPage()) {
                 logInfo('Not on Bing search page, opening Bing...');
                 window.open('https://www.bing.com', '_blank');
@@ -492,28 +656,55 @@
                     }
                 }
 
+                // Update counters
                 searchCount++;
                 GM_setValue('searchCount', searchCount);
+                sessionSearchCount++;
+                GM_setValue('sessionSearchCount', sessionSearchCount);
+                
                 updateFloatingButton();
-                logInfo(`Performed search ${searchCount}/${MAX_SEARCHES} for: ${keyword}`);
+                logInfo(`Performed search ${searchCount}/${MAX_SEARCHES} (Session ${currentSession}: ${sessionSearchCount}/${getSessionSize()}) for: ${keyword}`);
+                
+                // Check if we need to take a break after this search
+                const shouldTakeBreak = config.sessions.enabled && 
+                    (sessionSearchCount >= getSessionSize() || 
+                     config.sessions.breakPattern.some(pattern => pattern.after === searchCount));
+                
+                // Schedule the next search or break if still running
+                if (isRunning && searchCount < MAX_SEARCHES) {
+                    if (shouldTakeBreak) {
+                        // Time for a break between sessions!
+                        startSessionBreak();
+                    } else {
+                        // Continue with next search in current session
+                        const nextInterval = getRandomInterval();
+                        logInfo(`Next search in ${nextInterval/1000} seconds`);
+                        searchTimer = setTimeout(performSearch, nextInterval);
+                        lastRunTime = Date.now() + nextInterval;
+                        GM_setValue('lastRunTime', lastRunTime);
+                    }
+                } else if (searchCount >= MAX_SEARCHES) {
+                    logInfo('Reached maximum number of searches. Stopping automation.');
+                    stopAutomation();
+                }
             } else {
                 logError('Search input not found');
-            }
-
-            // Schedule the next search if still running
-            if (isRunning && searchCount < MAX_SEARCHES) {
-                const nextInterval = getRandomInterval();
-                logInfo(`Next search in ${nextInterval/1000} seconds`);
-                searchTimer = setTimeout(performSearch, nextInterval);
-                lastRunTime = Date.now() + nextInterval;
-                GM_setValue('lastRunTime', lastRunTime);
-            } else if (searchCount >= MAX_SEARCHES) {
-                logInfo('Reached maximum number of searches. Stopping automation.');
-                stopAutomation();
             }
         } catch (err) {
             logError(`Error in performSearch: ${err.message}`);
         }
+    }
+    
+    // Weighted random session size for more human-like behavior
+    function getSessionSize() {
+        // Using weighted randomness for more unpredictable, human-like session sizes
+        // The array contains duplicate values to increase probability of certain sizes:
+        // - Values 2-4 appear multiple times (higher probability)
+        // - Values 5-7 appear once each (medium probability)
+        // - Values 8+ appear once each (lower probability)
+        // This creates natural variability while favoring certain ranges
+        const weightedSizes = [2,2,2,3,3,4,4,5,5,6,7,8,9,10];
+        return weightedSizes[Math.floor(Math.random() * weightedSizes.length)];
     }
 
     // Function to start automated searches
@@ -528,8 +719,29 @@
 
                 isRunning = true;
                 GM_setValue('bingAutoSearchRunning', true);
+                
+                // Reset counters and session state
                 searchCount = 0;
                 GM_setValue('searchCount', searchCount);
+                
+                // Initialize session tracking
+                if (config.sessions.enabled) {
+                    currentSession = 1;
+                    GM_setValue('currentSession', currentSession);
+                    sessionSearchCount = 0;
+                    GM_setValue('sessionSearchCount', sessionSearchCount);
+                    isOnBreak = false;
+                    GM_setValue('isOnBreak', false);
+                    
+                    // Ensure any existing break timers are cleared
+                    if (breakTimer) {
+                        clearTimeout(breakTimer);
+                        breakTimer = null;
+                    }
+                    
+                    logInfo('Session-based searching enabled with weighted random session sizes');
+                }
+                
                 updateFloatingButton();
 
                 logInfo('Starting automated Bing searches');
@@ -553,9 +765,24 @@
             if (isRunning) {
                 isRunning = false;
                 GM_setValue('bingAutoSearchRunning', false);
+                
+                // Clear all timers
                 if (searchTimer) {
                     clearTimeout(searchTimer);
+                    searchTimer = null;
                 }
+                
+                if (breakTimer) {
+                    clearTimeout(breakTimer);
+                    breakTimer = null;
+                }
+                
+                // Reset break state if we were on a break
+                if (isOnBreak) {
+                    isOnBreak = false;
+                    GM_setValue('isOnBreak', false);
+                }
+                
                 updateFloatingButton();
                 logInfo('Stopped automated Bing searches');
 
@@ -945,33 +1172,69 @@
         try {
             const button = document.getElementById('bing-auto-search-button');
             if (button) {
-                // Update background gradient
-                button.style.background = isRunning ?
-                    'linear-gradient(135deg, #ff5555, #ff3333)' :
-                    'linear-gradient(135deg, #0078d7, #0063b1)';
+                // Update background gradient based on state
+                if (isOnBreak && isRunning) {
+                    // On break - show a relaxing blue
+                    button.style.background = 'linear-gradient(135deg, #3a7bd5, #00d2ff)';
+                } else if (isRunning) {
+                    // Active searching - show red
+                    button.style.background = 'linear-gradient(135deg, #ff5555, #ff3333)';
+                } else {
+                    // Not running - show default blue
+                    button.style.background = 'linear-gradient(135deg, #0078d7, #0063b1)';
+                }
 
                 // Update icon and text - Fix for TrustedHTML error
                 const iconSpan = button.querySelector('span:first-child');
                 if (iconSpan) {
-                    // Use textContent instead of innerHTML
-                    iconSpan.textContent = isRunning ? '⏹️' : '▶️';
+                    if (isOnBreak && isRunning) {
+                        iconSpan.textContent = '⏸️'; // Pause symbol for break
+                    } else {
+                        iconSpan.textContent = isRunning ? '⏹️' : '▶️';
+                    }
                 }
 
                 const textSpan = button.querySelector('span:nth-child(2)');
                 if (textSpan) {
-                    textSpan.textContent = isRunning ? 'STOP' : 'START';
+                    if (isOnBreak && isRunning) {
+                        textSpan.textContent = 'BREAK';
+                    } else {
+                        textSpan.textContent = isRunning ? 'STOP' : 'START';
+                    }
                 }
 
                 const counterSpan = document.getElementById('bing-search-counter');
                 if (counterSpan) {
-                    counterSpan.textContent = isRunning ? `${searchCount}/${MAX_SEARCHES}` : 'Rewards';
+                    if (!isRunning) {
+                        counterSpan.textContent = 'Rewards';
+                    } else if (isOnBreak) {
+                        // If on break, show remaining break time
+                        const timeLeft = Math.max(0, breakEndTime - Date.now());
+                        const minutes = Math.floor(timeLeft / 60000);
+                        const seconds = Math.floor((timeLeft % 60000) / 1000);
+                        counterSpan.textContent = `Break: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+                    } else if (config.sessions.enabled) {
+                        // Show session info along with search count
+                        counterSpan.textContent = `${searchCount}/${MAX_SEARCHES} (S${currentSession})`;
+                    } else {
+                        // Traditional search count display
+                        counterSpan.textContent = `${searchCount}/${MAX_SEARCHES}`;
+                    }
                 }
 
                 // Add/remove pulsing effect
-                if (isRunning) {
+                if (isRunning && !isOnBreak) {
                     button.classList.add('searching');
                 } else {
                     button.classList.remove('searching');
+                }
+                
+                // Add slow pulse during break
+                if (isOnBreak && isRunning) {
+                    button.classList.remove('searching');
+                    button.classList.add('on-break');
+                } else {
+                    button.classList.remove('on-break');
                 }
             }
         } catch (err) {
@@ -984,12 +1247,139 @@
         GM_registerMenuCommand('Start Auto-Search', startAutomation);
         GM_registerMenuCommand('Stop Auto-Search', stopAutomation);
         GM_registerMenuCommand('Clear Search History', clearSearchHistory);
+        
+        // Add session-related commands
+        GM_registerMenuCommand(`${config.sessions.enabled ? '✓ Disable' : '✗ Enable'} Session Breaks`, toggleSessionBreaks);
+        
+        // Only show these if session breaks are enabled
+        if (config.sessions.enabled) {
+            // Configure base session size (for estimation only)
+            GM_registerMenuCommand(`Set Base Session Size (Current: ${config.sessions.searchesPerSession})`, setSearchesPerSession);
+            
+            // Configure break duration
+            GM_registerMenuCommand(`Set Break Duration (Current: ${config.sessions.minBreakTime}-${config.sessions.maxBreakTime}s)`, setBreakDuration);
+            
+            // Toggle timer display during breaks
+            GM_registerMenuCommand(`${config.sessions.showTimer ? '✓ Hide' : '✗ Show'} Break Timer`, toggleBreakTimer);
+        }
+    }
+    
+    // Toggle session breaks on/off
+    function toggleSessionBreaks() {
+        config.sessions.enabled = !config.sessions.enabled;
+        GM_setValue('sessionsEnabled', config.sessions.enabled);
+        logInfo(`Session breaks ${config.sessions.enabled ? 'enabled' : 'disabled'}`);
+        
+        // Re-register menu commands to update availability of session settings
+        registerMenuCommands();
+        
+        // If currently running, update the button
+        if (isRunning) {
+            updateFloatingButton();
+        }
+    }
+    
+    // Set the number of searches per session (for total session count estimation only)
+    function setSearchesPerSession() {
+        const current = config.sessions.searchesPerSession;
+        const input = prompt(`Enter the estimated searches per session (Current: ${current}):\n\nNote: Actual session sizes are now dynamically determined using weighted randomness for more human-like behavior.`, current);
+        
+        // Validate input
+        const value = parseInt(input);
+        
+        if (!isNaN(value) && value > 0) {
+            config.sessions.searchesPerSession = value;
+            GM_setValue('searchesPerSession', value);
+            
+            // Recalculate total session count
+            totalSessionCount = Math.ceil(MAX_SEARCHES / config.sessions.searchesPerSession);
+            
+            logInfo(`Base searches per session set to: ${value}`);
+            registerMenuCommands(); // Re-register to update menu labels
+        } else if (input !== null) {
+            // Only show error if user didn't cancel
+            alert('Please enter a valid positive number.');
+        }
+    }
+    
+    // Set the break duration range
+    function setBreakDuration() {
+        const currentMin = config.sessions.minBreakTime;
+        const currentMax = config.sessions.maxBreakTime;
+        
+        const inputMin = prompt(`Enter minimum break time in seconds (Current: ${currentMin}):`, currentMin);
+        
+        // Check if the user cancelled
+        if (inputMin === null) return;
+        
+        // Validate minimum input
+        const minValue = parseInt(inputMin);
+        if (isNaN(minValue) || minValue < 5) {
+            alert('Please enter a valid number (minimum 5 seconds).');
+            return;
+        }
+        
+        const inputMax = prompt(`Enter maximum break time in seconds (Current: ${currentMax}):`, currentMax);
+        
+        // Check if the user cancelled
+        if (inputMax === null) return;
+        
+        // Validate maximum input
+        const maxValue = parseInt(inputMax);
+        if (isNaN(maxValue) || maxValue <= minValue) {
+            alert(`Please enter a valid number greater than the minimum (${minValue}).`);
+            return;
+        }
+        
+        // Save the values
+        config.sessions.minBreakTime = minValue;
+        config.sessions.maxBreakTime = maxValue;
+        GM_setValue('minBreakTime', minValue);
+        GM_setValue('maxBreakTime', maxValue);
+        
+        logInfo(`Break time range set to: ${minValue}-${maxValue} seconds`);
+        registerMenuCommands(); // Re-register to update menu labels
+    }
+    
+    // Toggle break timer visibility
+    function toggleBreakTimer() {
+        config.sessions.showTimer = !config.sessions.showTimer;
+        GM_setValue('showBreakTimer', config.sessions.showTimer);
+        logInfo(`Break timer ${config.sessions.showTimer ? 'visible' : 'hidden'}`);
+        registerMenuCommands(); // Re-register to update menu labels
     }
 
     // Check if we need to resume operation (when tab becomes active again)
     function checkAndResumeOperation() {
         try {
-            if (isRunning && !searchTimer) {
+            // First check if we need to resume a break
+            if (isRunning && isOnBreak) {
+                const currentTime = Date.now();
+                if (currentTime >= breakEndTime) {
+                    // Break is over, end it and resume searching
+                    logInfo('Break completed while tab was inactive, resuming searches');
+                    endSessionBreak();
+                    performSearch();
+                } else {
+                    // Still on break, resume the break timer
+                    const remainingBreakTime = breakEndTime - currentTime;
+                    logInfo(`Resuming break, ${Math.ceil(remainingBreakTime/1000)} seconds remaining`);
+                    
+                    if (config.sessions.showTimer) {
+                        startBreakTimer();
+                    } else {
+                        // Just schedule the next attempt without visual timer
+                        breakTimer = setTimeout(() => {
+                            endSessionBreak();
+                            performSearch();
+                        }, remainingBreakTime);
+                    }
+                }
+                return;
+            }
+            
+            // Normal search resume logic
+            if (isRunning && !searchTimer && !isOnBreak) {
                 const currentTime = Date.now();
                 if (currentTime >= lastRunTime) {
                     // The scheduled time has passed, perform search immediately
@@ -1024,10 +1414,19 @@
                         50% { transform: scale(1.05); }
                         100% { transform: scale(1); }
                     }
+                    @keyframes slowPulse {
+                        0% { transform: scale(1); opacity: 1; }
+                        50% { transform: scale(1.03); opacity: 0.9; }
+                        100% { transform: scale(1); opacity: 1; }
+                    }
                     .searching {
                         animation: pulse 2s infinite;
                     }
-                    #bing-auto-search-button[data-dragging="true"].searching {
+                    .on-break {
+                        animation: slowPulse 3s infinite;
+                    }
+                    #bing-auto-search-button[data-dragging="true"].searching,
+                    #bing-auto-search-button[data-dragging="true"].on-break {
                         animation: none;
                     }
                     #bing-auto-search-button {
