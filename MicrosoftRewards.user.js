@@ -642,9 +642,9 @@
                 searchInput.dispatchEvent(new Event('input', { bubbles: true }));
 
                 // Find and click the search button
-                const searchButton = document.querySelector('#search_icon') ||
-                                    document.querySelector('button[type="submit"]') ||
-                                    document.querySelector('#sb_form_go');
+                const searchButton = document.querySelector('#sb_form_go') ||
+                                    document.querySelector('#search_icon') ||
+                                    document.querySelector('button[type="submit"]');
 
                 if (searchButton) {
                     searchButton.click();
